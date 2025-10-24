@@ -1893,7 +1893,7 @@ class CriresPipeline:
         # mask the detector edges 
         Ncut = 10
 
-        for data_type in [data_frame, data_comb]:
+        for do_combine, data_type in enumerate([data_frame, data_comb]):
             for label in data_type:
                 indices = (self.product_info[self.key_caltype] == label)
                 
@@ -1910,13 +1910,13 @@ class CriresPipeline:
 
                     # output filename
                     l = label.split('_')[-1]
-                    if data_type == data_comb:
-                        file_name = os.path.join(self.combpath, 
+                    if do_combine:
+                        file_name = os.path.join(self.combpath,
                             '_'.join(['SPEC', target.replace(" ", ""), l]))
                     else:
                         file_name = os.path.join(self.framepath, 
-                            '_'.join(['SPEC_SERIES', target.replace(" ", ""), l]))
-                        
+                                                 '_'.join(['SPEC_SERIES', target.replace(" ", ""), l]))
+
                     indices_obj = indices & \
                         (self.product_info[self.key_target_name] == target)
 
@@ -1962,7 +1962,7 @@ class CriresPipeline:
                                 dt.append(hdu["FLUX"].data)
                                 dt_err.append(hdu["FLUX_ERR"].data)
                         nframe = len(dt)
-                        if data_type == data_comb:
+                        if do_combine:
                             # mean-combine each individual frames
                             dt, dt_err = su.combine_frames(dt, dt_err, collapse='mean')
                             self._plot_spec_by_order(file_name+'_'+item_wlen, dt, wlen)
@@ -1977,8 +1977,8 @@ class CriresPipeline:
                     indice_sort = np.argsort(wmin)
                     wlens = wlens[indice_sort]
 
-                    
-                    if data_type == data_comb:
+
+                    if do_combine:
                         # reshape spectra in 2D shape: (N_chips, N_pixel)
                         spec_series = np.reshape(specs, (-1, npixel))[indice_sort]
                         err_series = np.reshape(errs, (-1, npixel))[indice_sort]
@@ -2006,7 +2006,7 @@ class CriresPipeline:
                                         header=hdr)
                     self._add_to_product('/'.join(file_name.split('/')[-2:])+'.fits', 
                                     '_'.join(['SPEC']+label.split('_')[-2:]))
-                    if data_type == data_comb:
+                    if do_combine:
                         np.savetxt(file_name+'.dat', np.c_[wlens.flatten(), 
                                                             spec_series.flatten(), 
                                                             err_series.flatten()], 
