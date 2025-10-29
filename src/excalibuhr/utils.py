@@ -281,8 +281,8 @@ def align_jitter(dt, err, pix_shift, tw=None, debug=False):
     return dt_shift, err_shift
 
 
-def order_trace(det, badpix, slitlen, sub_factor=64, 
-                poly_order=2, offset=0, debug=False):
+def order_trace(det, badpix, slitlen,
+                sub_factor=64, poly_order=2, offset=0, debug=False):
     """
     Trace the spectral orders
 
@@ -306,8 +306,9 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
     [poly_upper, poly_lower]
         The polynomial coeffiences of upper and lower trace of each order
     """
-    order_length_min = 0.75*slitlen
+    order_length_min = 0.5*slitlen
     width = 2
+    sigma = 2
 
     im = np.ma.masked_array(det, mask=badpix)
 
@@ -327,32 +328,30 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
 
     # Set insignificant signal (<2sigma) to 0, only peaks are left 
     cont_std = np.nanstd(im_grad, axis=0)
-    im_grad[(im_grad < cont_std*2)] = 0
+    im_grad[(im_grad < cont_std*sigma)] = 0
     im_grad = np.nan_to_num(im_grad.data)
 
-    xx_loc, upper, lower   = [], [], []
+    # mask the peak at detector edge
+    im_grad[:2] = 0
+
+    upper, lower = [], []
     # Loop over each column in the sub-sampled image
     for i in range(im_grad.shape[1]):
 
         # Find the peaks and separate upper and lower traces
         yy = im_grad[:,i]
-        # indices = signal.argrelmax(yy)[0]
-        indices, _ = signal.find_peaks(yy, distance=10) 
-
+        indices, _ = signal.find_peaks(yy, distance=6) ##
         # use the distance between peaks to distinguish in/between orders
         ind_distance = np.diff(indices)
-        # print(ind_distance>0.9*slitlen, indices)
-        upper_first = np.where(ind_distance > 0.8*slitlen)[0][-1] + 1
+        upper_first = np.where(ind_distance > order_length_min)[0][-1] + 1
         ups_ind = np.arange(upper_first, 0.5, -2, dtype=int)[::-1]
         ups = indices[ups_ind]
         lows = indices[ups_ind-1]
 
-        # check if the bottom order is complete
-        # distance = ups - lows
-        # if distance[0] < order_length_min:
-        #     print(distance[0], order_length_min, slitlen)
-        #     ups = ups[1:]
-        #     lows = lows[1:]
+        # pop the bottom order if incomplete
+        if (ups[0] - lows[0]) < order_length_min:
+            ups = ups[1:]
+            lows = lows[1:]
 
         # Find the y-coordinates of the edges, weighted by the 
         # significance of the signal (i.e. center-of-mass)
@@ -374,19 +373,41 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
             plt.show()
 
         # x and y coordinates of the trace edges
-        xx_loc.append(xx_bin[i])
         lower.append(cens_low)
         upper.append(cens_up)
 
-    upper = np.array(upper).T
-    lower = np.array(lower).T
+    # consolidate the number of orders 
+    n_order = len(upper[0])
+    ll_ref = lower[0]
+    for k, (uu, ll) in enumerate(zip(upper, lower)):
+        if len(ll) < n_order:
+            n_order = min(n_order, len(ll))
+            ll_ref = ll.copy()
+
+    # remove orders that are not detected in all subimages
+    upper_cut = []
+    lower_cut = []
+    for k, (uu, ll) in enumerate(zip(upper, lower)):
+        if len(ll) > n_order:
+            ind_to_remove = []
+            for j, (u, l) in enumerate(zip(uu, ll)):
+                if min(np.abs(ll_ref - l)) > 0.5*slitlen:
+                    ind_to_remove.append(j)
+            upper_cut.append(np.delete(uu, ind_to_remove))
+            lower_cut.append(np.delete(ll, ind_to_remove))
+        else:
+            upper_cut.append(uu)
+            lower_cut.append(ll)
+
+    upper = np.array(upper_cut).T
+    lower = np.array(lower_cut).T
     poly_upper, poly_lower = [], []
     
     # Loop over each order
     for (loc_up, loc_low) in zip(upper, lower):
         # Fit polynomials to the upper and lower edges of each order
-        poly_up = Poly.polyfit(xx_loc, loc_up, poly_order)
-        poly_low = Poly.polyfit(xx_loc, loc_low, poly_order)
+        poly_up = Poly.polyfit(xx_bin, loc_up, poly_order)
+        poly_low = Poly.polyfit(xx_bin, loc_low, poly_order)
         poly_mid = (poly_up + poly_low) / 2.
 
         yy_up = Poly.polyval(xx, poly_up)
@@ -424,8 +445,10 @@ def order_trace(det, badpix, slitlen, sub_factor=64,
             poly_upper.append(poly_up)
             poly_lower.append(poly_low)
 
+    poly_upper = np.array(poly_upper)
+    poly_lower = np.array(poly_lower)
 
-    print(f"-> {len(poly_upper)} orders identified")
+    print(f"-> {n_order} orders identified")
 
     if debug:
         xx_grid = np.arange(0, im.shape[1])

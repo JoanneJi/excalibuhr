@@ -78,7 +78,6 @@ class CriresPipeline:
         self.product_file = os.path.join(self.nightpath, "product_info.txt")
         self.gain = [2.15, 2.19, 2.0]
         self.pix_scale = 0.056 #arcsec
-        self.trace_offset = 0
 
         self.obs_mode = obs_mode.upper()
 
@@ -923,22 +922,46 @@ class CriresPipeline:
             hdr = fits.getheader(os.path.join(self.calpath, file))
             file = self.calib_info[indices_bpm][self.key_filename].iloc[0]
             bpm = fits.getdata(os.path.join(self.calpath, file))
-            
+
+            slitlen = hdr[self.key_slitlen]/self.pix_scale
+
             # Fit polynomials to the trace edges
             trace = self._loop_over_detector(
                             su.order_trace, True, flat, bpm, 
-                            slitlen=hdr[self.key_slitlen]/self.pix_scale,
-                            offset=self.trace_offset,
+                            slitlen=slitlen,
                             debug=debug)
+            
+            # consolidate number of orders 
+            # remove if not detected in all detectors
+            n_order = min([len(trace[0][0]), len(trace[1][0]), len(trace[2][0])])
+            for i in range(len(trace)):
+                if len(trace[i][0]) == n_order:
+                    loc_ref = trace[i][0][:, 0]
+                    break
+
+            # remove orders that are not detected in all subimages
+            trace_cut = []
+            for i in range(len(trace)):
+                if len(trace[i][0]) != n_order:
+                    ind_to_remove = []
+                    for j, y in enumerate(trace[i][0][:, 0]):
+                        if min(np.abs(loc_ref - y)) > 0.5*slitlen:
+                            ind_to_remove.append(j)
+                    trace_cut.append([
+                        np.delete(trace[i][0], ind_to_remove, axis=0), 
+                        np.delete(trace[i][1], ind_to_remove, axis=0)])
+                else:
+                    trace_cut.append(trace[i])
+
 
             print("\n Output files:")
             # Save the polynomial coefficients
             file_name = os.path.join(self.calpath, f'TW_FLAT_{item_wlen}.fits')
-            wfits(file_name, ext_list={"FLUX": trace}, header=hdr)
+            wfits(file_name, ext_list={"FLUX": trace_cut}, header=hdr)
             self._add_to_calib(f'TW_FLAT_{item_wlen}.fits', "TRACE_TW")
             
             self._plot_det_image(file_name, f"FLAT_MASTER_{item_wlen}", 
-                            flat, tw=trace)
+                            flat, tw=trace_cut)
             
 
     @print_runtime
@@ -2099,6 +2122,7 @@ class CriresPipeline:
 
         print("Get telluric spectrum with SkyCalc...", end="", flush=True)
 
+        skycalc_ipy.core.ESOQueryBase.REQUEST_TIMEOUT = 30
         wave, trans, _ = sky_calc.get_sky_spectrum(return_type="arrays")
 
         print(" [DONE]\n")
