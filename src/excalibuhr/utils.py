@@ -17,6 +17,20 @@ import shutil
 import subprocess
 import requests
 
+# the path for esorex installation path -- user-defined
+import os
+os.environ["PATH"] = "/home/chenyangji/ESO/pipelines/cr2res/1.6.10/pipelines/bin:" + os.environ["PATH"]
+
+# # could also be changed as...
+# import os
+# import subprocess
+# # get the same PATH with the terminal
+# shell_path = subprocess.check_output(
+#     ["bash", "-lc", "echo $PATH"],
+#     text=True
+# ).strip()
+# os.environ["PATH"] = shell_path
+
 
 def util_master_dark(dt, combine_mode='median', badpix_clip=5):
     """
@@ -1665,6 +1679,21 @@ def optimal_extraction(D_full, V_full, bpm_full, obj_cen,
             ax3.imshow(D.T-bkg_model.T, aspect='auto', vmin=0, vmax=20)
             plt.show()
 
+        # print("Background model subtracted")
+        # plt.figure(figsize=(5,6))
+        # ax1 = plt.subplot(311)
+        # ax2 = plt.subplot(312, sharex=ax1)
+        # ax3 = plt.subplot(313, sharex=ax1)
+        # ax1.imshow(D.T, aspect='auto', vmin=0, vmax=40)
+        # ax1.text(0.5, 0.9, "Original Data", transform=ax1.transAxes, ha="center", va="bottom", color='red')
+        # ax2.imshow(bkg_model.T, aspect='auto', vmin=0, vmax=40)
+        # ax2.text(0.5, 0.9, "Background Model", transform=ax2.transAxes, ha="center", va="bottom", color='red')
+        # ax3.imshow(D.T-bkg_model.T, aspect='auto', vmin=0, vmax=40)
+        # ax3.text(0.5, 0.9, "Data - Background Model", transform=ax3.transAxes, ha="center", va="bottom", color='red')
+        # plt.colorbar(ax1.imshow(D.T, aspect='auto', vmin=0, vmax=40), ax=ax1, location='top')
+        # plt.suptitle("Optimal Extraction - starlight removal")
+        # plt.show()
+
         D -= bkg_model
         V_new += np.abs(bkg_model) / gain / NDIT
 
@@ -2230,6 +2259,47 @@ def get_PHOENIX_stellar_model(temp, wave_cut, logg=4.0):
 
     return w, f
 
+def get_blackbody_model(temp, wave_cut, num_points=20000):
+    """
+    Generate a blackbody spectrum for those with Teff exceed the PHOENIX model range.
+
+    Parameters
+    ----------
+    temp : float
+        Temperature in Kelvin.
+    wave_cut : list
+        [min_wavelength_nm, max_wavelength_nm]
+    num_points : int
+        Number of wavelength sampling points.
+
+    Returns
+    -------
+    w : array (nm)
+        Wavelength array.
+    f : array (erg/s/cm^2/cm)
+        Blackbody flux at each wavelength, normalized to median=1.
+    """
+
+    # physical constants (cgs)
+    h = 6.62607015e-27     # erg*s
+    c = 2.99792458e10      # cm/s
+    k_B = 1.380649e-16     # erg/K
+
+    # wavelength grid (nm)
+    w = np.linspace(wave_cut[0], wave_cut[1], num_points)
+    lam_cm = w * 1e-7   # convert nm → cm
+
+    # Planck function B_lambda (erg/s/cm^2/cm/sr)
+    B = (2*h*c**2 / lam_cm**5) / (np.exp(h*c/(lam_cm*k_B*temp)) - 1)
+
+    # convert per sr to flux (approx multiply π)
+    F = np.pi * B    # erg/s/cm^2/cm
+
+    # normalize like Phoenix
+    F_norm = F / np.median(F)
+
+    return w, F_norm
+
 
 def instrument_response(std, tellu, temp, vsini, vsys=0., 
                         mask_wave=[], debug=False):
@@ -2257,16 +2327,19 @@ def instrument_response(std, tellu, temp, vsini, vsys=0.,
     wave, flux, _ = std.get_spec1d()
     tellu = interp1d(tellu[:,0], tellu[:,1])(wave)
     
-    # adjust to be compatible with the Phoenix model
+    # adjust to be compatible with the Phoenix model, otherwise warn the user
     if temp < 2300 or temp > 12000:
-        raise ValueError(f"Standard star temperature {temp} K is out of Phoenix model range (2300-12000 K).")
+        warnings.warn(f"Standard star temperature {temp} K is out of Phoenix model range (2300-12000 K). Using blackbody model instead.")
     modulus = 100 if temp < 7000 else 200
     if temp % modulus != 0:
         warnings.warn(f"Standard star temperature {temp} K is not a multiple of {modulus} K - using the closest Phoenix model ({int(np.round(temp/modulus)*modulus)} K)")
         temp = int(np.round(temp/modulus)*modulus)
         
-    # get phoenix stellar model
-    wave_model, flux_model = get_PHOENIX_stellar_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
+    # get phoenix stellar model or blackbody model if out of range
+    if 2300 <= temp <= 12000:
+        wave_model, flux_model = get_PHOENIX_stellar_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
+    else:
+        wave_model, flux_model = get_blackbody_model(temp, wave_cut=[wave[0]-100, wave[-1]+100])
     # rotationally broaden and rv shift
     flux_model = rot_int_cmj(wave_model, flux_model, vsini)
     w_shift = wave * (1. - vsys/const.c.to("km/s").value)
@@ -2296,8 +2369,9 @@ def instrument_response(std, tellu, temp, vsini, vsys=0.,
     tellu_clean = flux / np.ravel(inst_res) / flux_model_interp
 
     if debug:
-        plt.plot(wave, tellu_clean)
-        plt.plot(wave, tellu)
+        plt.plot(wave, tellu_clean, label='detrended telluric spectrum of the standard star')
+        plt.plot(wave, tellu, label='telluric template')
+        plt.legend()
         plt.show()
 
     inst_res = flux/tellu_clean/flux_model_interp
@@ -2315,10 +2389,11 @@ def instrument_response(std, tellu, temp, vsini, vsys=0.,
         y_model, _, _ = PolyfitClip(x, y, order=2, mask=~mask, clip=3)
         resp.append(y_model)
         if debug:
-            plt.plot(x, y)
-            plt.plot(x, y_model)
+            line1, = plt.plot(x, y, color='gray')
+            line2, = plt.plot(x, y_model, color='red')
 
     if debug:
+        plt.legend([line1, line2], ['instrument response', '3-sigma clipped instrument response'])
         plt.show()
 
     return np.ravel(resp), tellu_clean
@@ -2586,10 +2661,13 @@ def molecfit(input_path, spec, wave_range=None, savename=None, verbose=False):
         col3 = fits.Column(name='FLUX_ERR', format='D', array=flux_err)
         table_hdu = fits.BinTableHDU.from_columns([col1, col2, col3])
         hdul_out.append(table_hdu)
+        # maximum flux for plotting
+        flux_max_plot = np.nanpercentile(flux[~mask], 98)
     
     if verbose:        
         for a,b in zip(wmin, wmax): 
             plt.axvspan(a, b, alpha=0.3, color='r')
+            plt.ylim(0, flux_max_plot*1.2)
         plt.show()
 
     # Create FITS file with SCIENCE

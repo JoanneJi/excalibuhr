@@ -597,6 +597,11 @@ class CriresPipeline:
                 ax = axes[Norder-1-i, d]
                 y = flux[d, i]
                 nans = np.isnan(y)
+                # ===== NEW: skip empty orders =====
+                if np.sum(~nans) == 0:
+                    warnings.warn(f"All of the points Norder={i}, Ndet={d} are masked.")
+                    continue
+                # ==================================
                 vmin, vmax = np.percentile(y[~nans], (1, 99))
                 ymin = min(vmin, ymin)
                 ymax = max(vmax, ymax)
@@ -1818,7 +1823,7 @@ class CriresPipeline:
 
 
     @print_runtime
-    def refine_wlen_solution(self, debug=False):
+    def refine_wlen_solution(self, savename='', debug=False):
         """
         Method for refining wavelength solution by manimizing 
         chi2 between the spectrum and the telluric transmission
@@ -1835,7 +1840,10 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_PRIMARY') 
+        if savename == '':
+            indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_PRIMARY')
+        else:
+            indices = (self.product_info[self.key_caltype] == 'Extr1D_COMBINED_'+savename)
 
         # Check unique WLEN setting
         unique_wlen = set()
@@ -1896,11 +1904,11 @@ class CriresPipeline:
                             debug=debug)
 
                 file_name = os.path.join(self.calpath, f'WLEN_{item_wlen}_' \
-                                        + '_'.join(target.split())+'.fits')
+                                        + '_'.join(target.split())+'_'+savename+'.fits')
                 hdr[self.key_target_name] = target
                 wfits(file_name, ext_list={"WAVE": wlen_cal}, header=hdr)
                 self._add_to_calib(f'WLEN_{item_wlen}_' \
-                                    + '_'.join(target.split())+'.fits', "CAL_WLEN")
+                                    + '_'.join(target.split())+ '_'+savename+'.fits', "CAL_WLEN")
 
                 self._plot_spec_by_order(file_name[:-5], dt, wlen_cal, 
                                         transm_spec=tellu_conv)
@@ -1912,6 +1920,9 @@ class CriresPipeline:
         all_labels = self.product_info[self.key_caltype].unique()
         data_frame = all_labels[pd.Series(all_labels).str.contains('Extr1D_FRAME', case=False)]
         data_comb = all_labels[pd.Series(all_labels).str.contains('Extr1D_COMBINED', case=False)]
+        # === APPLY savename FILTER ===
+        if savename not in ['', None]:
+            data_comb = [lab for lab in data_comb if lab.endswith('_'+savename)]
 
         # mask the detector edges 
         Ncut = 10
@@ -2111,12 +2122,12 @@ class CriresPipeline:
         sky_calc["wgrid_mode"] = "fixed_spectral_resolution"
         sky_calc["wres"] = 5e5
         sky_calc["pwv"] = pwv
-        sky_calc['airmass'] = airmass 
+        sky_calc['airmass'] = max(airmass, 1.15)
 
-        # print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
-        # print(f"  - lambda / Dlambda = {sky_calc['wres']}")
-        # print(f"  - Airmass = {sky_calc['airmass']:.2f}")
-        # print(f"  - PWV (mm) = {sky_calc['pwv']}\n")
+        print(f"  - Wavelength range (nm) = {sky_calc['wmin']} - {sky_calc['wmax']}")
+        print(f"  - lambda / Dlambda = {sky_calc['wres']}")
+        print(f"  - Airmass = {sky_calc['airmass']:.2f}")
+        print(f"  - PWV (mm) = {sky_calc['pwv']}\n")
 
         # Get telluric spectra from SkyCalc
 
@@ -2134,7 +2145,7 @@ class CriresPipeline:
 
 
     @print_runtime
-    def run_molecfit(self, object=None, data_type=None, wave_range=None, verbose=True):
+    def run_molecfit(self, object=None, savename='', data_type=None, wave_range=None, verbose=True):
         """
         Method for running ESO's tool for telluric correction `Molecfit`. 
 
@@ -2143,6 +2154,9 @@ class CriresPipeline:
         object: str
             Name of the star whose spectra is used for the telluric fitting. 
             Default is to carry out fitting for every target.
+        savename: str
+            Name of the star. If previously setted, remember to use it again
+            since the output data_type depends on this.
         data_type: str
             Label of the file type to fit for telluric absorption.
             The default value is `SPEC_COMBINED_PRIMARY`, i.e. the primary spectrum.
@@ -2161,7 +2175,10 @@ class CriresPipeline:
         self._print_section("Run Molecfit")
 
         # Create the molecfit directory if it does not exist yet
-        self.molpath = os.path.join(self.outpath, "molecfit")
+        if savename not in ['', None]:
+            self.molpath = os.path.join(self.outpath, "molecfit"+'_'+savename)
+        else:
+            self.molpath = os.path.join(self.outpath, "molecfit")
         if not os.path.exists(self.molpath):
             os.makedirs(self.molpath)
 
@@ -2171,6 +2188,8 @@ class CriresPipeline:
 
         if data_type is None:
             data_type = 'SPEC_COMBINED_PRIMARY'
+        if savename != '':
+            data_type =  'SPEC_COMBINED_' + savename
         indices = (self.product_info[self.key_caltype] == data_type)
 
         if not object is None:
@@ -2179,17 +2198,22 @@ class CriresPipeline:
 
         for science_file in self.product_info[indices][self.key_filename]:
 
-            name = science_file.split('/')[-1] 
-            target = name.split('_')[0]
+            name = science_file.split('/')[-1]
+            # target = name.split('_')[0]
+            target = savename if savename != '' else name.split('_')[0]
 
-            if data_type == 'SPEC_COMBINED_PRIMARY':
+            if (data_type == 'COMBINED_PRIMARY') or (data_type == 'SPEC_COMBINED_' + savename):
                 dt = SPEC(filename=os.path.join(self.outpath, science_file))
                 dt.wlen *= 1e-3
-                su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
 
-                
-                file_best_par = fits.getdata(os.path.join(self.molpath, 'BEST_FIT_PARAMETERS.fits'))
-                best_params = fits.getdata(file_best_par, 1)
+                file_best_par = os.path.join(self.molpath, 'BEST_FIT_PARAMETERS.fits')
+                if not os.path.isfile(file_best_par):
+                    print("BEST_FIT_PARAMETERS.fits not found — running molecfit...")
+                    su.molecfit(self.molpath, dt, wave_range, savename=name, verbose=verbose)
+                else:
+                    print("BEST_FIT_PARAMETERS.fits found — skipping molecfit run.")
+                best_params = fits.getdata(file_best_par, ext=1)
+
                 np.savetxt(os.path.join(self.molpath, f'BEST_FIT_PARAMETERS_{target}.txt'), 
                                 best_params.tolist()[:-2], fmt='%s')
 
@@ -2215,13 +2239,16 @@ class CriresPipeline:
                                            "FLUX": trans_model}, 
                                 header=dt_series.header)
             
-            self._add_to_product(f'molecfit/TELLURIC_{target}.fits', "TELLU_MOLECFIT")
+            if savename not in ['', None]:
+                self._add_to_product(f'molecfit_{savename}/TELLURIC_{target}.fits', "TELLU_MOLECFIT")
+            else:
+                self._add_to_product(f'molecfit/TELLURIC_{target}.fits', "TELLU_MOLECFIT")
 
 
 
     @print_runtime
     def spec_response_cal(self, object, temp, vsini, vsys, 
-                          mask_wave=[(2164, 2169)], debug=False
+                          savename='', mask_wave=[(2164, 2169)], debug=False
                         ):
         """
         Method for calibrating spectral shape using standard star observations.
@@ -2237,6 +2264,8 @@ class CriresPipeline:
             rotational broadenning of the standard star
         vsys: float
             systemic and barycentric  velocity correction for the standard star   
+        savename: str
+            Name of the target star, should be provided as above if provided before.
         mask_wave: list of tuple
             list of lower and upper limit for wavelength ranges (in nm) that need to 
             be masked when estimating the isntrument response.
@@ -2253,9 +2282,14 @@ class CriresPipeline:
         # get updated product info
         self.product_info = pd.read_csv(self.product_file, sep=';')
 
-        data_type = 'SPEC_COMBINED_PRIMARY'
+        if savename in ['', None]:
+            data_type = 'SPEC_COMBINED_PRIMARY'
+        else:
+            data_type =  'SPEC_COMBINED_' + savename
         indices_std =  (self.product_info[self.key_caltype] == data_type) & \
                         (self.product_info[self.key_target_name] == object)
+
+        # import pdb; pdb.set_trace()
 
         std_file = self.product_info[indices_std][self.key_filename].iloc[0]
         std = SPEC(filename=os.path.join(self.outpath, std_file))
@@ -2294,7 +2328,7 @@ class CriresPipeline:
 
 
     @print_runtime
-    def apply_correction(self, use_molecift=False):
+    def apply_correction(self, use_molecfit=False):
         """
         Method for apply telluric and instrument response correction
         using the output from `run_molecfit` and `spec_response_cal`. 
@@ -2336,7 +2370,7 @@ class CriresPipeline:
             # Loop over each target
             for target in unique_target:
 
-                if use_molecift:
+                if use_molecfit:
                     # get molecfit telluric model
                     indices_tellu = (self.product_info[self.key_caltype] == 'TELLU_MOLECFIT') & \
                                     (self.product_info[self.key_target_name] == target)
@@ -2366,7 +2400,11 @@ class CriresPipeline:
                     mask = mtrans < 0.7
                     f[mask] = np.nan
 
-                    file_name = os.path.join(self.outpath, file[:-5] + "1D_TELLURIC_CORR.dat")
+                    # different filename saved for comparing the results
+                    if use_molecfit:
+                        file_name = os.path.join(self.outpath, file[:-5] + "1D_TELLURIC_CORR_MOLECFIT.dat")
+                    else:
+                        file_name = os.path.join(self.outpath, file[:-5] + "1D_TELLURIC_CORR.dat")
                     np.savetxt(file_name, np.c_[w_std*1e-3, f, f_err], header="wave flux err")
 
                     print(f"Telluric corrected spectra saved to {file_name.split('/')[-1]}")
@@ -2466,7 +2504,7 @@ class CriresPipeline:
         self.refine_wlen_solution()
 
         if run_molecfit:
-            self.run_molecfit(wave_range=wave_range)
+            self.run_molecfit(savename=savename, wave_range=wave_range)
         
         if std_prop is not None:
             self.spec_response_cal(object=std_prop['name'], 
