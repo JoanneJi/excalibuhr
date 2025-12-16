@@ -1920,9 +1920,9 @@ class CriresPipeline:
         all_labels = self.product_info[self.key_caltype].unique()
         data_frame = all_labels[pd.Series(all_labels).str.contains('Extr1D_FRAME', case=False)]
         data_comb = all_labels[pd.Series(all_labels).str.contains('Extr1D_COMBINED', case=False)]
-        # === APPLY savename FILTER ===
-        if savename not in ['', None]:
-            data_comb = [lab for lab in data_comb if lab.endswith('_'+savename)]
+        # # === APPLY savename FILTER ===
+        # if savename not in ['', None]:
+        #     data_comb = [lab for lab in data_comb if lab.endswith('_'+savename)]
 
         # mask the detector edges 
         Ncut = 10
